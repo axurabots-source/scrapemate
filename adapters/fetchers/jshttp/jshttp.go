@@ -58,18 +58,25 @@ func New(params JSFetcherOptions) (scrapemate.HTTPFetcher, error) {
 	// there is no need to download/install the Chromium browser binary.
 	// We still need the Playwright Go driver itself (playwright.Run below)
 	// since it is what speaks the CDP protocol to ConnectOverCDP.
-	if obscuraCDPURL() == "" {
-		opts := []*playwright.RunOptions{
+	opts := []*playwright.RunOptions{
+		{
+			Browsers: []string{"chromium"},
+			Verbose:  true,
+		},
+	}
+	if obscuraCDPURL() != "" {
+		opts = []*playwright.RunOptions{
 			{
-				Browsers: []string{"chromium"},
-				Verbose:  true,
+				SkipInstallBrowsers: true,
+				Verbose:             true,
 			},
 		}
-
-		if err := playwright.Install(opts...); err != nil {
-			return nil, err
-		}
 	}
+
+	if err := playwright.Install(opts...); err != nil {
+		return nil, err
+	}
+
 
 	pw, err := playwright.Run()
 	if err != nil {
