@@ -237,6 +237,7 @@ func (s *ScrapeMate) Start() error {
 		defer wg.Done()
 
 		startTime := time.Now().UTC()
+		s.stats.touch()
 		tickerDur := time.Minute
 
 		const (
@@ -256,18 +257,24 @@ func (s *ScrapeMate) Start() error {
 			case <-s.ctx.Done():
 				return
 			case <-ticker.C:
-				numOfJobsCompleted, numOfJobsFailed, lastActivityAt := s.stats.getStats()
+				numOfJobsCompleted, numOfJobsFailed, activeJobs, lastActivityAt := s.stats.getStats()
 				perMinute := float64(numOfJobsCompleted) / time.Now().UTC().Sub(startTime).Seconds() * secondsPerMinute
 
 				s.log.Info("scrapemate stats",
 					"numOfJobsCompleted", numOfJobsCompleted,
 					"numOfJobsFailed", numOfJobsFailed,
+					"activeJobs", activeJobs,
 					"lastActivityAt", lastActivityAt,
 					"speed", fmt.Sprintf("%.2f jobs/min", perMinute),
 				)
 
-				if s.exitOnInactivity && time.Now().UTC().Sub(lastActivityAt) > s.exitOnInactivityDuration {
-					err := fmt.Errorf("%w: %s", ErrInactivityTimeout, lastActivityAt.Format(time.RFC3339))
+				lastActivity := lastActivityAt
+				if lastActivity.IsZero() {
+					lastActivity = startTime
+				}
+
+				if s.exitOnInactivity && activeJobs == 0 && time.Now().UTC().Sub(lastActivity) > s.exitOnInactivityDuration {
+					err := fmt.Errorf("%w: %s", ErrInactivityTimeout, lastActivity.Format(time.RFC3339))
 
 					s.log.Info("exiting because of inactivity", "error", err)
 					s.cancelFn(err)
@@ -542,7 +549,9 @@ func (s *ScrapeMate) startWorker(ctx context.Context) {
 
 			s.log.Info("restarted job provider")
 		case job := <-jobc:
+			s.stats.incActiveJobs()
 			ans, next, err := s.DoJob(ctx, job)
+			s.stats.decActiveJobs()
 			if err != nil {
 				s.log.Error("error while processing job", "error", err)
 
@@ -606,14 +615,40 @@ type stats struct {
 	l                  sync.RWMutex
 	numOfJobsCompleted int64
 	numOfJobsFailed    int64
+	activeJobs         int64
 	lastActivityAt     time.Time
 }
 
-func (o *stats) getStats() (completed, failed int64, lastActivityAt time.Time) {
+func (o *stats) getStats() (completed, failed, active int64, lastActivityAt time.Time) {
 	o.l.RLock()
 	defer o.l.RUnlock()
 
-	return o.numOfJobsCompleted, o.numOfJobsFailed, o.lastActivityAt
+	return o.numOfJobsCompleted, o.numOfJobsFailed, o.activeJobs, o.lastActivityAt
+}
+
+func (o *stats) touch() {
+	o.l.Lock()
+	defer o.l.Unlock()
+
+	o.lastActivityAt = time.Now().UTC()
+}
+
+func (o *stats) incActiveJobs() {
+	o.l.Lock()
+	defer o.l.Unlock()
+
+	o.activeJobs++
+	o.lastActivityAt = time.Now().UTC()
+}
+
+func (o *stats) decActiveJobs() {
+	o.l.Lock()
+	defer o.l.Unlock()
+
+	if o.activeJobs > 0 {
+		o.activeJobs--
+	}
+	o.lastActivityAt = time.Now().UTC()
 }
 
 func (o *stats) incJobsCompleted() {
